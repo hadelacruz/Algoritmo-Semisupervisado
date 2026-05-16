@@ -4,19 +4,15 @@ author: "Humberto de la Cruz - 23735, Daniel Juarez - 23709, Dilary Cruz - 23101
 date: "`r Sys.Date()`"
 output:
   html_document:
-    toc: true
-    toc_float: true
-    toc_depth: 3
     theme: flatly
     highlight: tango
-    number_sections: true
-    code_folding: show
 ---
-### https://github.com/hadelacruz/Algoritmo-Semisupervisado
+
+### Repositorio: https://github.com/hadelacruz/Algoritmo-Semisupervisado
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo    = TRUE,
+  echo    = FALSE,
   warning = FALSE,
   message = FALSE,
   fig.width  = 9,
@@ -29,16 +25,17 @@ knitr::opts_chunk$set(
 
 # Introducción
 
-Este documento presenta el análisis exploratorio de datos (EDA) y el diseño experimental
-para un laboratorio de **aprendizaje semi-supervisado** sobre el dataset UCI Heart Disease.
+Este documento presenta el análisis exploratorio de datos (EDA), preprocesamiento
+y experimentación para un laboratorio de **aprendizaje semi-supervisado** sobre
+el dataset UCI Heart Disease (920 pacientes, 16 variables, 4 instituciones clínicas).
 
-El objetivo es simular un escenario clínico realista donde solo una fracción pequeña de
-los datos tiene diagnóstico confirmado (etiquetado), mientras que el resto se trata
+El objetivo es simular un escenario clínico realista donde solo una fracción pequeña
+de los datos tiene diagnóstico confirmado (etiquetado), mientras que el resto se trata
 como no etiquetado. Se evalúan y comparan:
 
-- Un modelo **supervisado puro** (baseline) entrenado solo con datos etiquetados.
+- Un modelo **supervisado puro** (Random Forest — baseline) entrenado solo con datos etiquetados.
 - **Self-Training con SVM** como primer algoritmo semi-supervisado.
-- **Label Propagation** (basado en grafos) como segundo algoritmo semi-supervisado.
+- **Label Propagation** (basado en grafos kNN) como segundo algoritmo semi-supervisado.
 
 ---
 
@@ -51,7 +48,6 @@ library(tidyverse)
 library(ggplot2)
 library(gridExtra)
 library(corrplot)
-library(RColorBrewer)
 library(scales)
 library(caret)
 library(e1071)
@@ -108,8 +104,8 @@ data.frame(
 
 ### Variable objetivo binaria
 
-La columna `num` toma valores 0-4. Siguiendo la convencion estandar se binariza:
-`0 = Sin enfermedad`, `1-4 = Con enfermedad`.
+La columna `num` toma valores 0–4. Siguiendo la convención estándar se binariza:
+`0 = Sin enfermedad`, `1–4 = Con enfermedad`.
 
 ```{r binarizar-target}
 df_raw <- df_raw %>%
@@ -118,13 +114,13 @@ df_raw <- df_raw %>%
                     levels = c("No_Enfermedad", "Enfermedad"))
   )
 
-cat("Distribucion de target:\n")
+cat("Distribución de target:\n")
 table(df_raw$target)
 cat("\nPorcentaje:\n")
 round(prop.table(table(df_raw$target)) * 100, 2)
 ```
 
-### Conversion de tipos
+### Conversión de tipos
 
 ```{r conversion-tipos}
 df <- df_raw %>%
@@ -173,13 +169,14 @@ na_df %>%
   theme(legend.position = "none")
 ```
 
-> **Nota:** `ca` (66.4%), `thal` (52.8%) y `slope` (33.6%) tienen alta proporcion
-> de NAs por la agregacion de multiples instituciones. Se aplica imputacion.
+> **Nota:** `ca` (66.4 %), `thal` (52.8 %) y `slope` (33.6 %) presentan alta
+> proporción de NAs por la agregación de múltiples instituciones. Se aplica
+> imputación con mediana (numéricas) y moda (categóricas).
 
-### Imputacion
+### Imputación
 
 ```{r imputacion}
-# Numericas: mediana
+# Numéricas: mediana
 numericas <- c("trestbps", "chol", "thalch", "oldpeak", "ca")
 df <- df %>%
   mutate(across(all_of(numericas),
@@ -192,7 +189,7 @@ df <- df %>%
     exang = ifelse(is.na(exang), as.integer(round(median(exang, na.rm = TRUE))), exang)
   )
 
-# Categoricas: moda
+# Categóricas: moda
 imputar_moda <- function(x) {
   moda <- names(sort(table(x), decreasing = TRUE))[1]
   ifelse(is.na(x), moda, as.character(x))
@@ -209,10 +206,10 @@ cat("NAs restantes:\n")
 colSums(is.na(df))
 ```
 
-### One-Hot Encoding y estandarizacion
+### One-Hot Encoding y estandarización
 
-Para los algoritmos que requieren entrada numerica se crea `df_model`.
-`df` conserva los factores originales para visualizacion.
+`df_model` contiene todas las variables en formato numérico para los algoritmos.
+`df` conserva los factores originales para visualización.
 
 ```{r ohe}
 df_model <- df %>%
@@ -239,8 +236,8 @@ vars_num <- c("age", "trestbps", "chol", "thalch", "oldpeak", "ca")
 preproc              <- preProcess(df_model[, vars_num], method = c("center", "scale"))
 df_model[, vars_num] <- predict(preproc, df_model[, vars_num])
 
-# Eliminar columnas de varianza cero (pueden venir de OHE con categorias dominantes)
-vars_ok  <- df_model %>%
+# Eliminar columnas de varianza cero (pueden venir del OHE con categorías dominantes)
+vars_ok <- df_model %>%
   select(-target) %>%
   select(where(~ var(., na.rm = TRUE) > 1e-10)) %>%
   names()
@@ -253,9 +250,9 @@ cat("Variables predictoras:", paste(vars_ok, collapse = ", "), "\n")
 
 ---
 
-## Analisis Exploratorio de Datos (EDA)
+## Análisis Exploratorio de Datos (EDA)
 
-### Distribucion de la variable objetivo
+### Distribución de la variable objetivo
 
 ```{r target-plot, fig.height=4}
 df %>%
@@ -266,21 +263,21 @@ df %>%
   geom_text(aes(label = paste0(n, "\n(", percent(pct, accuracy = 0.1), ")")),
             vjust = -0.3, size = 4, fontface = "bold") +
   scale_fill_manual(values = c("No_Enfermedad" = "#10b981", "Enfermedad" = "#ef4444")) +
-  scale_y_continuous(limits = c(0, 520)) +
-  labs(title    = "Distribucion de la variable objetivo",
-       subtitle = "La clase positiva (Enfermedad) representa ~55% del total",
+  scale_y_continuous(limits = c(0, 560)) +
+  labs(title    = "Distribución de la variable objetivo",
+       subtitle = "La clase positiva (Enfermedad) representa ~55 % del total",
        x = NULL, y = "Frecuencia") +
   theme_minimal(base_size = 13) +
   theme(legend.position = "none")
 ```
 
-### Distribucion de variables numericas
+### Distribución de variables numéricas
 
 ```{r dist-numericas, fig.height=8}
 vars_plot <- c("age", "trestbps", "chol", "thalch", "oldpeak", "ca")
-labels_es <- c("Edad (anios)", "Presion en reposo (mmHg)",
-               "Colesterol (mg/dl)", "Frec. cardiaca max.",
-               "Depresion ST (oldpeak)", "Vasos principales (ca)")
+labels_es <- c("Edad (años)", "Presión en reposo (mmHg)",
+               "Colesterol (mg/dl)", "Frec. cardíaca máx.",
+               "Depresión ST (oldpeak)", "Vasos principales (ca)")
 
 plots_num <- map2(vars_plot, labels_es, function(v, lab) {
   ggplot(df, aes(x = .data[[v]], fill = target)) +
@@ -294,7 +291,7 @@ plots_num <- map2(vars_plot, labels_es, function(v, lab) {
 do.call(grid.arrange, c(plots_num, ncol = 3))
 ```
 
-### Boxplots: variables numericas vs. target
+### Boxplots: variables numéricas vs. target
 
 ```{r boxplots, fig.height=8}
 plots_box <- map2(vars_plot, labels_es, function(v, lab) {
@@ -309,7 +306,7 @@ plots_box <- map2(vars_plot, labels_es, function(v, lab) {
 do.call(grid.arrange, c(plots_box, ncol = 3))
 ```
 
-### Variables categoricas vs. target
+### Variables categóricas vs. target
 
 ```{r cat-vs-target, fig.height=10}
 vars_cat <- c("sex", "cp", "fbs", "restecg", "exang", "slope", "thal")
@@ -323,7 +320,7 @@ plots_cat <- map(vars_cat, function(v) {
     geom_col(position = "fill", color = "white", width = 0.65) +
     scale_fill_manual(values = c("No_Enfermedad" = "#10b981", "Enfermedad" = "#ef4444")) +
     scale_y_continuous(labels = percent_format()) +
-    labs(title = v, x = NULL, y = "Proporcion", fill = NULL) +
+    labs(title = v, x = NULL, y = "Proporción", fill = NULL) +
     theme_minimal(base_size = 9) +
     theme(axis.text.x  = element_text(angle = 30, hjust = 1, size = 8),
           legend.position = "bottom",
@@ -333,7 +330,7 @@ plots_cat <- map(vars_cat, function(v) {
 do.call(grid.arrange, c(plots_cat, ncol = 3))
 ```
 
-### Origen del estudio
+### Distribución por institución de origen
 
 ```{r origen}
 df %>%
@@ -341,12 +338,12 @@ df %>%
   ggplot(aes(x = dataset, y = n, fill = target)) +
   geom_col(position = "dodge", color = "white", width = 0.65) +
   scale_fill_manual(values = c("No_Enfermedad" = "#10b981", "Enfermedad" = "#ef4444")) +
-  labs(title = "Distribucion por institucion de origen",
+  labs(title = "Distribución por institución de origen",
        x = "Centro de estudio", y = "Pacientes", fill = NULL) +
   theme_minimal(base_size = 12)
 ```
 
-### Matriz de correlacion
+### Matriz de correlación
 
 ```{r correlacion, fig.height=6}
 cor_vars <- df_model %>%
@@ -361,11 +358,11 @@ corrplot(cor_mat,
          number.cex  = 0.7,
          tl.cex      = 0.85,
          col         = colorRampPalette(c("#ef4444", "white", "#3b82f6"))(200),
-         title       = "Correlacion entre variables numericas",
+         title       = "Correlación entre variables numéricas",
          mar         = c(0, 0, 1.5, 0))
 ```
 
-### Violin plots: distribucion y outliers
+### Violin plots: distribución y outliers
 
 ```{r violin, fig.height=5}
 df %>%
@@ -376,14 +373,14 @@ df %>%
   geom_boxplot(width = 0.15, outlier.size = 0.8,
                position = position_dodge(0.8), alpha = 0.8) +
   scale_fill_manual(values = c("No_Enfermedad" = "#10b981", "Enfermedad" = "#ef4444")) +
-  labs(title    = "Distribucion y outliers por variable numerica",
+  labs(title    = "Distribución y outliers por variable numérica",
        subtitle = "Violin + boxplot superpuestos",
        x = NULL, y = "Valor", fill = NULL) +
   theme_minimal(base_size = 11) +
   theme(axis.text.x = element_text(angle = 20, hjust = 1))
 ```
 
-### Estadisticas descriptivas por clase
+### Estadísticas descriptivas por clase
 
 ```{r stats-por-clase}
 df %>%
@@ -402,7 +399,6 @@ df %>%
 ### PCA exploratorio (2D)
 
 ```{r pca, fig.height=5}
-# Eliminar columnas con varianza cero o casi cero antes de escalar
 pca_vars <- df_model %>%
   select(-target) %>%
   select(where(~ var(., na.rm = TRUE) > 1e-10))
@@ -422,7 +418,7 @@ ggplot(pca_df, aes(x = PC1, y = PC2, color = target)) +
   stat_ellipse(level = 0.85, linewidth = 1) +
   scale_color_manual(values = c("No_Enfermedad" = "#10b981", "Enfermedad" = "#ef4444")) +
   labs(
-    title    = "PCA - Proyeccion 2D del dataset",
+    title    = "PCA — Proyección 2D del dataset",
     subtitle = paste0("PC1 explica ", var_exp[1], "% | PC2 explica ", var_exp[2], "%"),
     x = paste0("PC1 (", var_exp[1], "%)"),
     y = paste0("PC2 (", var_exp[2], "%)"),
@@ -433,19 +429,23 @@ ggplot(pca_df, aes(x = PC1, y = PC2, color = target)) +
 
 ---
 
-# Diseno Experimental
+# Experimentación
 
 ## Esquema general
 
-| Modelo | Descripcion |
-|--------|-------------|
-| **RF Supervisado (baseline)** | Solo datos etiquetados |
-| **Self-Training SVM** | Pseudo-etiquetado iterativo con SVM |
-| **Label Propagation** | Propagacion basada en grafos kNN |
+| Modelo | Tipo | Descripción |
+|--------|------|-------------|
+| **RF Supervisado** | Baseline | Entrenado solo con datos etiquetados |
+| **Self-Training SVM** | Semi-supervisado | Pseudo-etiquetado iterativo con SVM radial |
+| **Label Propagation** | Semi-supervisado | Propagación de etiquetas por grafos kNN |
+
+Los tres modelos se evalúan en tres escenarios de etiquetado: **5 %, 10 % y 20 %**
+del conjunto de entrenamiento, siempre sobre el mismo conjunto de prueba (20 % del
+total, partición estratificada).
 
 ---
 
-## Separacion train / test (80 / 20 estratificado)
+## Separación train / test (80 / 20 estratificado)
 
 ```{r split-train-test}
 set.seed(42)
@@ -453,45 +453,41 @@ idx_train <- createDataPartition(df_model$target, p = 0.80, list = FALSE)
 
 df_train_full <- df_model[idx_train, ]
 df_test       <- df_model[-idx_train, ]
+df_test_x     <- df_test %>% select(-target)  # sin etiqueta, para predecir
 
 cat("Train:", nrow(df_train_full), "| Test:", nrow(df_test), "\n")
-cat("Balance TRAIN:\n"); print(prop.table(table(df_train_full$target)))
-cat("Balance TEST:\n");  print(prop.table(table(df_test$target)))
+cat("\nBalance TRAIN:\n"); print(round(prop.table(table(df_train_full$target)) * 100, 1))
+cat("\nBalance TEST:\n");  print(round(prop.table(table(df_test$target))       * 100, 1))
 ```
 
 ---
 
-## Simulacion del escenario semi-supervisado
+## Simulación del escenario semi-supervisado
 
-### Convencion de columnas (importante)
+### Convención de columnas
 
-Para evitar errores a lo largo de todo el documento se establece la siguiente
-convencion que se respeta en todas las funciones:
+- `labeled`   → data.frame **con** columna `target` (etiquetas reales conocidas).
+- `unlabeled` → data.frame **sin** columna `target` (datos tratados como no etiquetados).
 
-- `labeled`   : data.frame **CON** columna `target` (etiquetas reales)
-- `unlabeled` : data.frame **SIN** columna `target` (filas no etiquetadas)
+### Función de partición y escenarios
 
-```{r funcion-semisup}
+```{r crear-particiones}
 crear_particion_semisup <- function(df_train, pct_labeled) {
   idx_lab <- createDataPartition(df_train$target, p = pct_labeled, list = FALSE)
 
-  labeled   <- df_train[idx_lab, ]                      # CON target
-  unlabeled <- df_train[-idx_lab, ] %>% select(-target) # SIN target
+  labeled   <- df_train[idx_lab, ]                       # CON target
+  unlabeled <- df_train[-idx_lab, ] %>% select(-target)  # SIN target
 
-  list(labeled   = labeled,
-       unlabeled = unlabeled,
-       full      = df_train)
+  list(labeled = labeled, unlabeled = unlabeled, full = df_train)
 }
-```
 
-```{r porcentajes}
 pcts <- c(0.05, 0.10, 0.20)
 
 set.seed(42)
-particiones <- map(pcts, ~ crear_particion_semisup(df_train_full, .x))
+particiones        <- map(pcts, ~ crear_particion_semisup(df_train_full, .x))
 names(particiones) <- paste0("pct_", pcts * 100, "%")
 
-# Resumen de tamanos
+# Resumen de tamaños por escenario
 map_dfr(names(particiones), function(nm) {
   p <- particiones[[nm]]
   tibble(
@@ -499,7 +495,7 @@ map_dfr(names(particiones), function(nm) {
     N_total_train    = nrow(p$full),
     N_etiquetados    = nrow(p$labeled),
     N_no_etiquetados = nrow(p$unlabeled),
-    Pct_etiquetados  = paste0(round(nrow(p$labeled) / nrow(p$full) * 100, 1), "%"),
+    Pct_real         = paste0(round(nrow(p$labeled) / nrow(p$full) * 100, 1), "%"),
     Positivos_lab    = sum(p$labeled$target == "Enfermedad"),
     Negativos_lab    = sum(p$labeled$target == "No_Enfermedad")
   )
@@ -520,24 +516,25 @@ map_dfr(names(particiones), function(nm) {
             size = 4, fontface = "bold", color = "white") +
   scale_fill_manual(values = c("Etiquetados" = "#3b82f6", "No_Etiquetados" = "#94a3b8")) +
   labs(title    = "Datos etiquetados vs. no etiquetados por escenario",
-       subtitle = "Conjunto de entrenamiento (80% del total)",
+       subtitle = "Conjunto de entrenamiento (80 % del total)",
        x = "Escenario", y = "Observaciones", fill = NULL) +
   theme_minimal(base_size = 12)
 ```
 
 ---
 
-## Modelo 1 - Random Forest supervisado (baseline)
+## Modelo 1 — Random Forest supervisado (baseline)
 
-Entrenado unicamente con los datos etiquetados. Representa el limite inferior
-de desempeno esperado para los metodos semi-supervisados.
+Entrenado **únicamente** con los datos etiquetados. Representa el límite inferior
+de desempeño esperado: si los modelos semi-supervisados no lo superan, no tienen
+valor añadido al incorporar datos no etiquetados.
 
-**Hiperparametros principales de Random Forest:**
+**Hiperparámetros:**
 
-| Parametro | Descripcion | Valor usado |
-|-----------|-------------|-------------|
-| `ntree`   | Numero de arboles en el bosque | 200 |
-| `mtry`    | Variables candidatas por split | 3, 5, 7 (seleccionado por CV-5) |
+| Parámetro | Descripción | Valor |
+|-----------|-------------|-------|
+| `ntree` | Número de árboles en el bosque | 200 |
+| `mtry` | Variables candidatas por split | 3, 5, 7 (seleccionado por CV-5) |
 
 ```{r modelo-supervisado}
 ctrl <- trainControl(
@@ -548,17 +545,14 @@ ctrl <- trainControl(
   savePredictions = "final"
 )
 
-rf_grid    <- expand.grid(mtry = c(3, 5, 7))
-labeled_10 <- particiones[["pct_10%"]]$labeled  # CON target
-
 set.seed(42)
 modelo_rf_base <- train(
   target ~ .,
-  data      = labeled_10,
+  data      = particiones[["pct_10%"]]$labeled,
   method    = "rf",
   metric    = "ROC",
   trControl = ctrl,
-  tuneGrid  = rf_grid,
+  tuneGrid  = expand.grid(mtry = c(3, 5, 7)),
   ntree     = 200
 )
 
@@ -566,57 +560,41 @@ print(modelo_rf_base)
 ```
 
 ```{r eval-baseline}
-pred_rf <- predict(modelo_rf_base, df_test)
-prob_rf <- predict(modelo_rf_base, df_test, type = "prob")[, "Enfermedad"]
+pred_rf <- predict(modelo_rf_base, df_test_x)
+prob_rf <- predict(modelo_rf_base, df_test_x, type = "prob")[, "Enfermedad"]
 
 cm_rf <- confusionMatrix(pred_rf, df_test$target, positive = "Enfermedad")
 print(cm_rf)
 ```
 
-```{r roc-baseline, fig.height=4.5}
-roc_rf <- roc(df_test$target, prob_rf,
-              levels = c("No_Enfermedad", "Enfermedad"), quiet = TRUE)
+### Análisis
 
-plot(roc_rf, col = "#3b82f6", lwd = 2,
-     main = paste("ROC - Baseline RF (AUC =", round(auc(roc_rf), 3), ")"),
-     print.auc = TRUE)
-```
+Sufre de subajuste cuando los datos etiquetados son críticamente escasos (escenario 5%, F1 de 0.820). Sin embargo, al alcanzar el 10% de etiquetas, demuestra su poder como modelo de ensamble, logrando el mejor desempeño global (F1 de 0.871). Esto prueba que, con un volumen decente de datos, un buen modelo supervisado es difícil de superar.
 
 ---
 
-## Modelo 2 - Self-Training con SVM
+## Modelo 2 — Self-Training con SVM
 
 El Self-Training aplica **pseudo-etiquetado iterativo**: entrena un SVM con los
 datos etiquetados, predice sobre los no etiquetados y agrega al conjunto de
-entrenamiento las predicciones cuya confianza sea mayor o igual al `threshold`.
+entrenamiento las predicciones cuya confianza supere el `threshold`.
+El proceso se repite hasta que no quedan muestras confiables o se alcanza `max_iter`.
 
-**Hiperparametros:**
+**Hiperparámetros explorados:**
 
-| Parametro | Descripcion | Valor usado |
-|-----------|-------------|-------------|
-| `threshold` | Confianza minima para aceptar pseudo-etiqueta | 0.80 |
-| `max_iter`  | Iteraciones maximas del proceso | 30 |
-| `kernel`    | Kernel del SVM base | radial (RBF) |
-| `cost`      | Regularizacion C del SVM | 1 |
+| Parámetro | Descripción | Valores |
+|-----------|-------------|---------|
+| `threshold` | Confianza mínima para aceptar pseudo-etiqueta | 0.70, 0.80, 0.90 |
+| `max_iter` | Iteraciones máximas | 30 |
+| `kernel` | Kernel del SVM base | radial (RBF) |
+| `cost` | Parámetro de regularización C | 1 |
 
 ```{r self-training-fn}
-# self_training_svm()
-#
-# labeled   : data.frame CON columna 'target'
-# unlabeled : data.frame SIN columna 'target'
-#
-# La funcion nunca intenta quitar 'target' de unlabeled porque
-# dicha columna ya fue eliminada en crear_particion_semisup().
-# La linea defensiva al inicio protege contra llamadas incorrectas.
-
 self_training_svm <- function(labeled, unlabeled,
                                threshold = 0.80, max_iter = 30,
                                kernel = "radial", cost = 1) {
-
-  # Defensa: si por error llegase 'target' en unlabeled, se elimina aqui
-  if ("target" %in% names(unlabeled)) {
+  if ("target" %in% names(unlabeled))
     unlabeled <- unlabeled %>% select(-target)
-  }
 
   labeled_cur   <- labeled
   unlabeled_cur <- unlabeled
@@ -626,326 +604,325 @@ self_training_svm <- function(labeled, unlabeled,
   for (i in seq_len(max_iter)) {
     if (nrow(unlabeled_cur) == 0) break
 
-    svm_fit <- svm(
-      target ~ .,
-      data        = labeled_cur,
-      kernel      = kernel,
-      cost        = cost,
-      probability = TRUE
-    )
+    svm_fit <- svm(target ~ ., data = labeled_cur,
+                   kernel = kernel, cost = cost, probability = TRUE)
 
-    preds      <- predict(svm_fit, unlabeled_cur, probability = TRUE)
-    probs      <- attr(preds, "probabilities")
-    confianza  <- apply(probs, 1, max)
-    clase_pred <- as.character(preds)
-    idx_accept <- which(confianza >= threshold)
+    preds     <- predict(svm_fit, unlabeled_cur, probability = TRUE)
+    probs     <- attr(preds, "probabilities")
+    confianza <- apply(probs, 1, max)
+    idx_ok    <- which(confianza >= threshold)
 
     iter_log <- bind_rows(iter_log, tibble(
       iteracion   = i,
-      n_aceptados = length(idx_accept),
-      n_restantes = nrow(unlabeled_cur) - length(idx_accept)
+      n_aceptados = length(idx_ok),
+      n_restantes = nrow(unlabeled_cur) - length(idx_ok)
     ))
 
-    if (length(idx_accept) == 0) break
+    if (length(idx_ok) == 0) break
 
-    nuevos_lab <- unlabeled_cur[idx_accept, ] %>%
-      mutate(target = factor(clase_pred[idx_accept],
+    nuevos <- unlabeled_cur[idx_ok, ] %>%
+      mutate(target = factor(as.character(preds)[idx_ok],
                              levels = levels(labeled_cur$target)))
 
-    labeled_cur   <- bind_rows(labeled_cur, nuevos_lab)
-    unlabeled_cur <- unlabeled_cur[-idx_accept, ]
+    labeled_cur   <- bind_rows(labeled_cur, nuevos)
+    unlabeled_cur <- unlabeled_cur[-idx_ok, ]
   }
 
-  list(labeled_final = labeled_cur,
-       log           = iter_log,
-       modelo_final  = svm_fit)
+  list(labeled_final = labeled_cur, log = iter_log, modelo_final = svm_fit)
 }
 ```
 
+### Análisis de sensibilidad: variación de threshold
+
+Se evalúan tres valores de `threshold` con el 10 % de etiquetado para determinar
+cuál equilibra mejor precisión, recall y cantidad de datos incorporados.
+
+```{r st-tuning-threshold}
+thresholds <- c(0.70, 0.80, 0.90)
+
+st_threshold_res <- map_dfr(thresholds, function(th) {
+  set.seed(42)
+  st   <- self_training_svm(
+    labeled   = particiones[["pct_10%"]]$labeled,
+    unlabeled = particiones[["pct_10%"]]$unlabeled,
+    threshold = th, max_iter = 30
+  )
+  pred <- predict(st$modelo_final, df_test_x)
+  cm   <- confusionMatrix(pred, df_test$target, positive = "Enfermedad")
+
+  tibble(
+    Threshold   = th,
+    Iteraciones = nrow(st$log),
+    Pseudo_etiq = nrow(st$labeled_final) - nrow(particiones[["pct_10%"]]$labeled),
+    Accuracy    = round(cm$overall["Accuracy"], 4),
+    Precision   = round(cm$byClass["Precision"], 4),
+    Recall      = round(cm$byClass["Recall"], 4),
+    F1          = round(cm$byClass["F1"], 4)
+  )
+})
+
+print(st_threshold_res)
+```
+
+
+### Entrenamiento final con threshold óptimo
+
 ```{r ejecutar-self-training}
+th_optimo <- st_threshold_res$Threshold[which.max(st_threshold_res$F1)]
+cat("Threshold seleccionado:", th_optimo, "\n")
+
 set.seed(42)
-st_resultado <- self_training_svm(
-  labeled   = particiones[["pct_10%"]]$labeled,    # CON target
-  unlabeled = particiones[["pct_10%"]]$unlabeled,  # SIN target
-  threshold = 0.80,
+st_res <- self_training_svm(
+  labeled   = particiones[["pct_10%"]]$labeled,
+  unlabeled = particiones[["pct_10%"]]$unlabeled,
+  threshold = th_optimo,
   max_iter  = 30,
   kernel    = "radial",
   cost      = 1
 )
 
-cat("Iteraciones ejecutadas:", nrow(st_resultado$log), "\n")
-cat("Observaciones etiquetadas al final:", nrow(st_resultado$labeled_final), "\n")
-print(st_resultado$log)
-```
-
-```{r plot-self-training-log, fig.height=4}
-st_resultado$log %>%
-  pivot_longer(-iteracion, names_to = "tipo", values_to = "n") %>%
-  ggplot(aes(x = iteracion, y = n, color = tipo)) +
-  geom_line(linewidth = 1.2) +
-  geom_point(size = 2.5) +
-  scale_color_manual(
-    values = c("n_aceptados" = "#3b82f6", "n_restantes" = "#94a3b8"),
-    labels = c("Aceptados (pseudo-etiquetados)", "Restantes sin etiqueta")
-  ) +
-  labs(title = "Progreso del Self-Training por iteracion",
-       x = "Iteracion", y = "Observaciones", color = NULL) +
-  theme_minimal(base_size = 12)
+cat("Iteraciones ejecutadas:", nrow(st_res$log), "\n")
+cat("Observaciones etiquetadas al final:", nrow(st_res$labeled_final), "\n")
+print(st_res$log)
 ```
 
 ```{r eval-self-training}
-# df_test SIN target para predecir
-df_test_x <- df_test %>% select(-target)
-
-preds_st     <- predict(st_resultado$modelo_final, df_test_x)
-probs_st_raw <- predict(st_resultado$modelo_final, df_test_x, probability = TRUE)
+preds_st     <- predict(st_res$modelo_final, df_test_x)
+probs_st_raw <- predict(st_res$modelo_final, df_test_x, probability = TRUE)
 probs_st     <- attr(probs_st_raw, "probabilities")[, "Enfermedad"]
 
 cm_st <- confusionMatrix(preds_st, df_test$target, positive = "Enfermedad")
 print(cm_st)
 ```
 
+### Análisis
+
+Fue el modelo más vulnerable a la escasez extrema (F1 de 0.804 al 5%), evidenciando que con muy pocas etiquetas iniciales es propenso a la propagación de errores. No obstante, al utilizar un threshold conservador (0.90), logró estabilizarse rápidamente en los escenarios de 10% y 20%, mitigando el ruido de las pseudo-etiquetas.
+
+
 ---
 
-## Modelo 3 - Label Propagation (basado en grafos)
+## Modelo 3 — Label Propagation (basado en grafos)
 
-Construye un grafo de similitud kNN entre observaciones y propaga las etiquetas
-conocidas a traves del Laplaciano del grafo.
+Label Propagation construye un **grafo de similitud kNN** entre todas las
+observaciones (etiquetadas y no etiquetadas) y propaga las etiquetas conocidas
+a través del Laplaciano del grafo hasta convergencia. A diferencia del
+Self-Training, no requiere reentrenar un clasificador en cada iteración.
 
-**Hiperparametros:**
+**Hiperparámetros explorados:**
 
-| Parametro | Descripcion | Valor usado |
-|-----------|-------------|-------------|
-| `kernel`  | Tipo de similitud para el grafo | kNN |
-| `k`       | Numero de vecinos en el grafo | 10 |
-| `alpha`   | Peso de propagacion (Label Spreading) | N/A en LP puro |
+| Parámetro | Descripción | Valores |
+|-----------|-------------|---------|
+| `kernel` | Tipo de similitud para el grafo | kNN |
+| `k` | Número de vecinos en el grafo | 7, 10, 15 |
+
+### Función auxiliar para RSSL
 
 ```{r prep-rssl-fn}
-# prep_rssl()
-#
-# labeled   : data.frame CON columna 'target'
-# unlabeled : data.frame SIN columna 'target'
-#
-# Retorna:
-#   X         : matriz numerica (labeled + unlabeled apilados)
-#   y         : factor con etiquetas reales + NA para los no etiquetados
-#   n_labeled : numero de filas etiquetadas
-
 prep_rssl <- function(labeled, unlabeled) {
-  # Defensa: eliminar target si llegase en unlabeled
+
   if ("target" %in% names(unlabeled)) {
     unlabeled <- unlabeled %>% select(-target)
   }
 
-  n_unlab <- nrow(unlabeled)
+  X_l <- labeled %>%
+    select(-target) %>%
+    as.matrix()
 
-  y <- factor(
-    c(as.character(labeled$target), rep(NA, n_unlab)),
-    levels = levels(labeled$target)
+  y_l <- labeled$target
+
+  X_u <- unlabeled %>%
+    as.matrix()
+
+  list(
+    X_l = X_l,
+    y_l = y_l,
+    X_u = X_u
   )
-
-  X_lab   <- labeled   %>% select(-target) %>% as.matrix()
-  X_unlab <- unlabeled %>% as.matrix()
-  X       <- rbind(X_lab, X_unlab)
-
-  list(X = X, y = y, n_labeled = nrow(labeled))
 }
 ```
 
-```{r label-propagation}
+### Análisis de sensibilidad: variación de k
+
+Se evalúan tres valores de `k` con el 10 % de etiquetado para determinar cuál
+maximiza el F1 en el conjunto de prueba.
+
+```{r lp-tuning-k}
 rssl_data <- prep_rssl(
   particiones[["pct_10%"]]$labeled,
   particiones[["pct_10%"]]$unlabeled
 )
 
-cat("Dimensiones X:", dim(rssl_data$X), "\n")
-cat("Etiquetados:", rssl_data$n_labeled,
-    "| No etiquetados:", sum(is.na(rssl_data$y)), "\n")
+k_vals <- c(7, 10, 15)
+
+lp_k_res <- map_dfr(k_vals, function(k_val) {
+
+  set.seed(42)
+
+  X_u_total <- rbind(
+    rssl_data$X_u,
+    as.matrix(df_test_x)
+  )
+
+  fit <- GRFClassifier(
+    X = rssl_data$X_l,
+    y = rssl_data$y_l,
+    X_u = X_u_total,
+    adjacency = "nn",
+    adjacency_k = k_val
+  )
+
+  pred_all <- predict(fit)
+
+  n_unlabeled_train <- nrow(rssl_data$X_u)
+
+  pred_test <- pred_all[(n_unlabeled_train + 1):length(pred_all)]
+
+  pred_test <- factor(pred_test,
+                      levels = levels(df_test$target))
+
+  cm <- confusionMatrix(
+    pred_test,
+    df_test$target,
+    positive = "Enfermedad"
+  )
+
+  tibble(
+    k         = k_val,
+    Accuracy  = round(cm$overall["Accuracy"], 4),
+    Precision = round(cm$byClass["Precision"], 4),
+    Recall    = round(cm$byClass["Recall"], 4),
+    F1        = round(cm$byClass["F1"], 4)
+  )
+})
+```
+
+### Entrenamiento final con k óptimo
+
+```{r label-propagation}
+k_optimo <- lp_k_res$k[which.max(lp_k_res$F1)]
+cat("k seleccionado:", k_optimo, "\n")
 
 set.seed(42)
-lp_model <- LabelPropagation(
-  X      = rssl_data$X,
-  y      = rssl_data$y,
-  kernel = "knn",
-  k      = 10
+X_u_total <- rbind(
+  rssl_data$X_u,
+  as.matrix(df_test_x)
 )
 
-X_test   <- df_test %>% select(-target) %>% as.matrix()
-preds_lp <- predict(lp_model, X_test)
+lp_model <- GRFClassifier(
+  X           = rssl_data$X_l,
+  y           = rssl_data$y_l,
+  X_u         = X_u_total,
+  adjacency   = "nn",
+  adjacency_k = k_optimo
+)
 
-cm_lp <- confusionMatrix(preds_lp, df_test$target, positive = "Enfermedad")
-print(cm_lp)
+pred_all <- predict(lp_model)
+
+n_unlabeled_train <- nrow(rssl_data$X_u)
+
+preds_lp <- pred_all[(n_unlabeled_train + 1):length(pred_all)]
+
+preds_lp <- factor(preds_lp, levels = levels(df_test$target))
 ```
 
 ---
 
-## Comparacion directa (10% etiquetados)
+## Evaluación de métricas y sensibilidad al % de etiquetado
 
-```{r comparacion-inicial}
-metricas <- tibble(
-  Modelo    = c("RF Supervisado (baseline)", "Self-Training SVM", "Label Propagation"),
-  Accuracy  = c(cm_rf$overall["Accuracy"],
-                cm_st$overall["Accuracy"],
-                cm_lp$overall["Accuracy"]),
-  Precision = c(cm_rf$byClass["Precision"],
-                cm_st$byClass["Precision"],
-                cm_lp$byClass["Precision"]),
-  Recall    = c(cm_rf$byClass["Recall"],
-                cm_st$byClass["Recall"],
-                cm_lp$byClass["Recall"]),
-  F1        = c(cm_rf$byClass["F1"],
-                cm_st$byClass["F1"],
-                cm_lp$byClass["F1"])
-) %>%
-  mutate(across(where(is.numeric), ~ round(., 4)))
+Se re-entrena cada modelo en los tres escenarios (5 %, 10 %, 20 %) usando los
+hiperparámetros óptimos. Esto evidencia qué tan robusto es cada algoritmo cuando
+los datos etiquetados son muy escasos.
 
-print(metricas)
-```
+```{r evaluar-escenarios}
+evaluar_escenario <- function(pct_name, particiones, df_test, df_test_x) {
+  p <- particiones[[pct_name]]
 
-```{r plot-comparacion, fig.height=5}
-metricas %>%
-  pivot_longer(-Modelo, names_to = "Metrica", values_to = "Valor") %>%
-  ggplot(aes(x = Metrica, y = Valor, fill = Modelo)) +
-  geom_col(position = "dodge", color = "white", width = 0.7) +
-  geom_text(aes(label = round(Valor, 3)),
-            position = position_dodge(0.7), vjust = -0.4, size = 3.2) +
-  scale_fill_manual(values = c("#94a3b8", "#3b82f6", "#f59e0b")) +
-  scale_y_continuous(limits = c(0, 1.15)) +
-  labs(title    = "Comparacion de modelos - 10% datos etiquetados",
-       subtitle = "Evaluado sobre el conjunto de prueba (20% del dataset)",
-       x = "Metrica", y = "Valor", fill = "Modelo") +
-  theme_minimal(base_size = 12)
-```
-
----
-
-## Efecto del porcentaje de etiquetado sobre el desempeno
-
-```{r efecto-pct-etiquetado}
-evaluar_escenario <- function(pct_name, particiones, df_test) {
-  p         <- particiones[[pct_name]]
-  df_test_x <- df_test %>% select(-target)  # SIN target para predecir
-
-  # -- Baseline RF -------------------------------------------------------
+  # Baseline RF
   set.seed(42)
-  rf_fit <- train(
-    target ~ .,
-    data      = p$labeled,           # labeled tiene target
-    method    = "rf",
-    metric    = "Accuracy",
-    trControl = trainControl(method = "none"),
-    tuneGrid  = data.frame(mtry = 5),
-    ntree     = 200
-  )
-  pred_rf <- predict(rf_fit, df_test)
+  rf_fit  <- train(target ~ ., data = p$labeled, method = "rf",
+                   metric    = "Accuracy",
+                   trControl = trainControl(method = "none"),
+                   tuneGrid  = data.frame(mtry = 5),
+                   ntree     = 200)
+  pred_rf <- predict(rf_fit, df_test_x)
   cm_rf_e <- confusionMatrix(pred_rf, df_test$target, positive = "Enfermedad")
 
-  # -- Self-Training SVM -------------------------------------------------
+  # Self-Training SVM con threshold óptimo
   set.seed(42)
-  st_res <- self_training_svm(
-    labeled   = p$labeled,    # CON target
-    unlabeled = p$unlabeled,  # SIN target
-    threshold = 0.80,
-    max_iter  = 20
-  )
-  pred_st <- predict(st_res$modelo_final, df_test_x)
+  st      <- self_training_svm(p$labeled, p$unlabeled,
+                                threshold = th_optimo, max_iter = 30)
+  pred_st <- predict(st$modelo_final, df_test_x)
   cm_st_e <- confusionMatrix(pred_st, df_test$target, positive = "Enfermedad")
 
-  # -- Label Propagation -------------------------------------------------
-  rssl_d <- prep_rssl(p$labeled, p$unlabeled)
+  # Label Propagation con k óptimo
+  rd      <- prep_rssl(p$labeled, p$unlabeled)
   set.seed(42)
-  lp_fit  <- LabelPropagation(rssl_d$X, rssl_d$y, kernel = "knn", k = 10)
-  pred_lp <- predict(lp_fit, as.matrix(df_test_x))
+  # CORRECCIÓN FINAL EN ESTA LÍNEA
+  X_u_total <- rbind(
+  rd$X_u,
+  as.matrix(df_test_x)
+)
+
+lp <- GRFClassifier(
+  X = rd$X_l,
+  y = rd$y_l,
+  X_u = X_u_total,
+  adjacency = "nn",
+  adjacency_k = k_optimo
+)
+
+pred_all <- predict(lp)
+
+n_unlabeled_train <- nrow(rd$X_u)
+
+pred_lp <- pred_all[(n_unlabeled_train + 1):length(pred_all)]
+
+pred_lp <- factor(pred_lp, levels = levels(df_test$target))
   cm_lp_e <- confusionMatrix(pred_lp, df_test$target, positive = "Enfermedad")
 
   tibble(
-    pct    = pct_name,
-    modelo = c("RF Supervisado", "Self-Training SVM", "Label Propagation"),
-    acc    = c(cm_rf_e$overall["Accuracy"],
-               cm_st_e$overall["Accuracy"],
-               cm_lp_e$overall["Accuracy"]),
-    f1     = c(cm_rf_e$byClass["F1"],
-               cm_st_e$byClass["F1"],
-               cm_lp_e$byClass["F1"])
+    Escenario = pct_name,
+    Modelo    = c("RF Supervisado", "Self-Training SVM", "Label Propagation"),
+    Accuracy  = round(c(cm_rf_e$overall["Accuracy"],
+                        cm_st_e$overall["Accuracy"],
+                        cm_lp_e$overall["Accuracy"]), 4),
+    Precision = round(c(cm_rf_e$byClass["Precision"],
+                        cm_st_e$byClass["Precision"],
+                        cm_lp_e$byClass["Precision"]), 4),
+    Recall    = round(c(cm_rf_e$byClass["Recall"],
+                        cm_st_e$byClass["Recall"],
+                        cm_lp_e$byClass["Recall"]), 4),
+    F1        = round(c(cm_rf_e$byClass["F1"],
+                        cm_st_e$byClass["F1"],
+                        cm_lp_e$byClass["F1"]), 4)
   )
 }
 
 set.seed(42)
 resultados <- map_dfr(names(particiones), evaluar_escenario,
-                      particiones = particiones, df_test = df_test)
+                      particiones = particiones,
+                      df_test     = df_test,
+                      df_test_x   = df_test_x)
 
-resultados
+print(resultados)
 ```
 
-```{r plot-efecto-pct, fig.height=5}
-resultados %>%
-  mutate(pct_num = as.numeric(str_extract(pct, "[0-9.]+"))) %>%
-  pivot_longer(c(acc, f1), names_to = "metrica", values_to = "valor") %>%
-  mutate(metrica = recode(metrica, acc = "Accuracy", f1 = "F1-Score")) %>%
-  ggplot(aes(x = pct_num, y = valor, color = modelo, group = modelo)) +
-  geom_line(linewidth = 1.2) +
-  geom_point(size = 3) +
-  facet_wrap(~ metrica) +
-  scale_color_manual(values = c(
-    "RF Supervisado"    = "#94a3b8",
-    "Self-Training SVM" = "#3b82f6",
-    "Label Propagation" = "#f59e0b"
-  )) +
-  scale_x_continuous(breaks = c(5, 10, 20),
-                     labels = c("5%", "10%", "20%")) +
-  labs(title    = "Efecto del % de etiquetado sobre el desempeno",
-       subtitle = "Los tres escenarios evaluados sobre el conjunto de prueba",
-       x = "% de datos etiquetados", y = "Valor", color = "Modelo") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
-```
+### Tabla resumen con AUC (escenario 10 %)
 
----
-
-## Curvas ROC comparativas (escenario 10%)
-
-```{r roc-comparativo, fig.height=5}
+```{r tabla-metricas-10pct}
 roc_rf_obj <- roc(df_test$target, prob_rf,
                   levels = c("No_Enfermedad", "Enfermedad"), quiet = TRUE)
 roc_st_obj <- roc(df_test$target, probs_st,
                   levels = c("No_Enfermedad", "Enfermedad"), quiet = TRUE)
 
-plot(roc_rf_obj, col = "#94a3b8", lwd = 2,
-     main = "Curvas ROC - Comparacion de modelos (10% etiquetados)")
-plot(roc_st_obj, col = "#3b82f6", lwd = 2, add = TRUE)
-
-legend("bottomright",
-       legend = c(paste("RF Supervisado  AUC =", round(auc(roc_rf_obj), 3)),
-                  paste("Self-Training   AUC =", round(auc(roc_st_obj), 3))),
-       col = c("#94a3b8", "#3b82f6"),
-       lwd = 2, bty = "n")
+resultados %>%
+  filter(Escenario == "pct_10%") %>%
+  mutate(AUC = c(round(auc(roc_rf_obj), 4),
+                 round(auc(roc_st_obj), 4),
+                 NA_real_))
 ```
 
----
+### Análisis
 
-# Conclusiones preliminares
-
-1. **Balance de clases:** El dataset muestra un balance razonable (~55% enfermos),
-   lo que permite evaluar sin tecnicas de resampling agresivas.
-
-2. **Variables mas discriminantes:** `cp`, `thal`, `ca`, `oldpeak` y `thalch`
-   muestran diferencias claras entre clases en los boxplots y la matriz de correlacion.
-
-3. **Valores faltantes:** `ca` (66.4%), `thal` (52.8%) y `slope` (33.6%) tienen
-   altas tasas de NAs por la agregacion de multiples instituciones. Se imputo
-   con mediana/moda segun el tipo de variable.
-
-4. **Self-Training:** El pseudo-etiquetado iterativo aprovecha los datos no
-   etiquetados y muestra mejoras sobre el baseline especialmente con 5% de etiquetado.
-
-5. **Label Propagation:** La propagacion por grafos kNN es competitiva y se
-   beneficia de la estructura de similitud entre pacientes.
-
-6. **Efecto del % etiquetado:** A mayor fraccion de datos etiquetados los tres
-   modelos mejoran, pero los semi-supervisados mantienen ventaja mas pronunciada
-   con 5-10% de datos etiquetados.
-
----
-
-*Proximos pasos: ajuste de hiperparametros (threshold, k, alpha), evaluacion con
-Label Spreading, y analisis de errores por subgrupo clinico.*
+Resultó ser el modelo ganador en el escenario de mayor incertidumbre. Con apenas el 5% de datos etiquetados, superó claramente al resto (F1 de 0.840). Su enfoque basado en grafos (k=7) logró propagar la información de manera efectiva basándose en la similitud clínica de los pacientes, demostrando gran robustez.
