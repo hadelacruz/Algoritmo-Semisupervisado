@@ -589,6 +589,42 @@ El proceso se repite hasta que no quedan muestras confiables o se alcanza `max_i
 | `kernel` | Kernel del SVM base | radial (RBF) |
 | `cost` | Parámetro de regularización C | 1 |
 
+### Fundamento conceptual y matemático
+
+El Self-Training se basa en la hipótesis de **suavidad** (*smoothness assumption*):
+puntos cercanos en el espacio de características tienden a pertenecer a la misma
+clase. Bajo este supuesto, las predicciones de alta confianza de un clasificador
+son probablemente correctas y pueden incorporarse como nuevas etiquetas.
+
+**Función de decisión del SVM radial (RBF):**
+
+El clasificador base es un SVM con kernel RBF, cuya función de decisión es:
+
+$$f(\mathbf{x}) = \text{sgn}\!\left(\sum_{i=1}^{n} \alpha_i \, y_i \, K(\mathbf{x}_i, \mathbf{x}) + b\right)$$
+
+donde $K(\mathbf{x}_i, \mathbf{x}) = \exp\!\left(-\gamma \|\mathbf{x}_i - \mathbf{x}\|^2\right)$ es el kernel RBF
+y $\alpha_i$ son los multiplicadores de Lagrange obtenidos al maximizar el margen.
+
+**Criterio de pseudo-etiquetado:**
+
+En cada iteración $t$, para cada muestra no etiquetada $\mathbf{x}_u$ se obtiene
+la probabilidad de clase $\hat{p}_t(\mathbf{x}_u)$ via Platt scaling. La muestra
+se agrega al conjunto etiquetado solo si:
+
+$$\max_c \; \hat{p}_t(y = c \mid \mathbf{x}_u) \geq \tau$$
+
+donde $\tau$ es el `threshold`. El proceso itera hasta que ninguna muestra supera
+el umbral o se alcanza `max_iter`.
+
+**Supuestos, ventajas y limitaciones:**
+
+| | Detalle |
+|---|---|
+| **Supuesto principal** | Las regiones de alta densidad son homogéneas en clase (*cluster assumption*) |
+| **Ventaja** | Simple de implementar; compatible con cualquier clasificador base |
+| **Limitación** | Propaga errores: una pseudo-etiqueta incorrecta contamina iteraciones futuras |
+| **Riesgo de sobreajuste** | Un threshold bajo acepta predicciones ruidosas; aumentar $\tau$ reduce el riesgo pero deja más datos sin aprovechar |
+
 ```{r self-training-fn}
 self_training_svm <- function(labeled, unlabeled,
                                threshold = 0.80, max_iter = 30,
@@ -681,6 +717,8 @@ st_res <- self_training_svm(
   cost      = 1
 )
 
+
+
 cat("Iteraciones ejecutadas:", nrow(st_res$log), "\n")
 cat("Observaciones etiquetadas al final:", nrow(st_res$labeled_final), "\n")
 print(st_res$log)
@@ -715,6 +753,42 @@ Self-Training, no requiere reentrenar un clasificador en cada iteración.
 |-----------|-------------|---------|
 | `kernel` | Tipo de similitud para el grafo | kNN |
 | `k` | Número de vecinos en el grafo | 7, 10, 15 |
+
+### Fundamento conceptual y matemático
+
+Label Propagation se basa en la hipótesis de **manifold**: los datos de alta
+dimensión yacen sobre una variedad de baja dimensión, y las etiquetas deben
+variar suavemente a lo largo de ella.
+
+**Construcción del grafo kNN:**
+
+Se construye un grafo $G = (V, E, W)$ donde cada nodo es una observación
+(etiquetada o no). La matriz de pesos $W$ se define como:
+
+$$W_{ij} = \begin{cases} 1 & \text{si } \mathbf{x}_j \in \text{kNN}(\mathbf{x}_i) \\ 0 & \text{en otro caso} \end{cases}$$
+
+**Laplaciano del grafo y propagación:**
+
+Se define la matriz de grado $D_{ii} = \sum_j W_{ij}$ y el Laplaciano normalizado:
+
+$$\mathcal{L} = D^{-1/2}(D - W)D^{-1/2}$$
+
+Las etiquetas se propagan resolviendo el sistema:
+
+$$F^* = (I - \alpha \, D^{-1}W)^{-1} Y_L$$
+
+donde $\alpha \in (0,1)$ controla el peso entre la información del grafo y las
+etiquetas originales, e $Y_L$ es la matriz de etiquetas con ceros en los nodos
+no etiquetados. La clase predicha para cada nodo es $\arg\max_c F^*_{ic}$.
+
+**Supuestos, ventajas y limitaciones:**
+
+| | Detalle |
+|---|---|
+| **Supuesto principal** | Puntos conectados en el grafo pertenecen a la misma clase (*manifold assumption*) |
+| **Ventaja** | Propagación global y estable; no acumula error iterativamente |
+| **Limitación** | Costo de memoria $O(n^2)$ para construir el grafo; no produce probabilidades directas |
+| **Riesgo de subajuste** | Un $k$ muy grande suaviza demasiado las fronteras de decisión |
 
 ### Función auxiliar para RSSL
 
@@ -926,3 +1000,393 @@ resultados %>%
 ### Análisis
 
 Resultó ser el modelo ganador en el escenario de mayor incertidumbre. Con apenas el 5% de datos etiquetados, superó claramente al resto (F1 de 0.840). Su enfoque basado en grafos (k=7) logró propagar la información de manera efectiva basándose en la similitud clínica de los pacientes, demostrando gran robustez.
+
+
+
+# Visualización y Análisis Gráfico
+
+## Curvas de desempeño según porcentaje de etiquetas
+
+Comparación directa de los tres modelos a través de los escenarios de 5 %, 10 % y 20 %
+de datos etiquetados. Un modelo semi-supervisado que agrega valor debe superar
+al baseline supervisado, especialmente en escenarios de escasez extrema.
+
+```{r curvas-desempeno, fig.height=6}
+resultados %>%
+  mutate(
+    Pct_Etiquetado = case_when(
+      Escenario == "pct_5%"  ~ 5,
+      Escenario == "pct_10%" ~ 10,
+      Escenario == "pct_20%" ~ 20
+    ),
+    Modelo = factor(Modelo, levels = c("RF Supervisado",
+                                       "Self-Training SVM",
+                                       "Label Propagation"))
+  ) %>%
+  pivot_longer(cols = c(Accuracy, F1, Precision, Recall),
+               names_to = "Metrica", values_to = "Valor") %>%
+  ggplot(aes(x = Pct_Etiquetado, y = Valor,
+             color = Modelo, group = Modelo,
+             linetype = Modelo, shape = Modelo)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3.2) +
+  facet_wrap(~ Metrica, ncol = 2, scales = "free_y") +
+  scale_color_manual(values = c("RF Supervisado"    = "#6366f1",
+                                "Self-Training SVM" = "#f59e0b",
+                                "Label Propagation" = "#10b981")) +
+  scale_x_continuous(breaks = c(5, 10, 20),
+                     labels = c("5%", "10%", "20%")) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  labs(
+    title    = "Desempeño de los modelos según porcentaje de etiquetas",
+    subtitle = "Evaluado en el conjunto de prueba (20 % del total, partición estratificada)",
+    x        = "Porcentaje de datos etiquetados",
+    y        = "Valor de la métrica",
+    color    = "Modelo", linetype = "Modelo", shape = "Modelo"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "bottom",
+    strip.text       = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+---
+
+## Matrices de confusión — escenario 10 %
+
+Las matrices visualizan errores de clasificación: filas = clase real,
+columnas = clase predicha. Los valores en diagonal son aciertos;
+fuera de ella, falsos negativos (izq.) y falsos positivos (der.) tienen
+implicaciones clínicas distintas.
+
+```{r matrices-confusion, fig.height=4.5, fig.width=10}
+# Helper: convierte confusionMatrix en data.frame para ggplot
+cm_to_df <- function(cm, titulo) {
+  as.data.frame(cm$table) %>%
+    rename(Real = Reference, Predicho = Prediction) %>%
+    group_by(Real) %>%
+    mutate(Pct = Freq / sum(Freq)) %>%
+    ungroup() %>%
+    mutate(Modelo = titulo)
+}
+
+# Recalcular predicciones con 10 % para cada modelo
+set.seed(42)
+rf_10 <- train(target ~ .,
+               data      = particiones[["pct_10%"]]$labeled,
+               method    = "rf",
+               metric    = "Accuracy",
+               trControl = trainControl(method = "none"),
+               tuneGrid  = data.frame(mtry = 5),
+               ntree     = 200)
+pred_rf10 <- predict(rf_10, df_test_x)
+
+pred_st10 <- predict(st_res$modelo_final, df_test_x)
+
+cm_rf10 <- confusionMatrix(pred_rf10, df_test$target, positive = "Enfermedad")
+cm_st10 <- confusionMatrix(pred_st10, df_test$target, positive = "Enfermedad")
+cm_lp10 <- confusionMatrix(preds_lp,  df_test$target, positive = "Enfermedad")
+
+df_cms <- bind_rows(
+  cm_to_df(cm_rf10, "RF Supervisado"),
+  cm_to_df(cm_st10, "Self-Training SVM"),
+  cm_to_df(cm_lp10, "Label Propagation")
+) %>%
+  mutate(Modelo = factor(Modelo,
+                         levels = c("RF Supervisado",
+                                    "Self-Training SVM",
+                                    "Label Propagation")))
+
+ggplot(df_cms, aes(x = Predicho, y = Real, fill = Pct)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = paste0(Freq, "\n(", scales::percent(Pct, accuracy = 1), ")")),
+            size = 3.8, fontface = "bold") +
+  facet_wrap(~ Modelo, ncol = 3) +
+  scale_fill_gradient(low = "#f0fdf4", high = "#16a34a",
+                      labels = scales::percent_format()) +
+  labs(
+    title    = "Matrices de confusión — escenario 10 % de etiquetas",
+    subtitle = "Porcentaje calculado sobre el total de la clase real (filas)",
+    x = "Clase predicha", y = "Clase real", fill = "% por fila"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text      = element_text(face = "bold", size = 11),
+    legend.position = "right"
+  )
+```
+
+---
+
+## Evolución del Self-Training — pseudo-etiquetas por iteración
+
+Cada barra muestra cuántas muestras fueron aceptadas (confianza ≥ threshold) en
+cada iteración. El proceso converge cuando ninguna predicción supera el umbral.
+
+```{r evolucion-self-training, fig.height=4.5}
+st_res$log %>%
+  mutate(
+    Fase = case_when(
+      iteracion == 1              ~ "Inicio",
+      n_aceptados == 0            ~ "Convergencia",
+      iteracion == max(iteracion) ~ "Última iteración",
+      TRUE                        ~ "Expansión"
+    )
+  ) %>%
+  ggplot(aes(x = iteracion, y = n_aceptados, fill = Fase)) +
+  geom_col(width = 0.75, color = "white") +
+  geom_line(aes(y = n_restantes, group = 1),
+            color = "#64748b", linewidth = 1, linetype = "dashed") +
+  geom_point(aes(y = n_restantes), color = "#64748b", size = 2.5) +
+  scale_fill_manual(values = c("Inicio"           = "#3b82f6",
+                                "Expansión"        = "#f59e0b",
+                                "Convergencia"     = "#ef4444",
+                                "Última iteración" = "#8b5cf6")) +
+  scale_x_continuous(breaks = seq_len(max(st_res$log$iteracion))) +
+  labs(
+    title    = paste0("Self-Training SVM — evolución del etiquetado (threshold = ", th_optimo, ")"),
+    subtitle = "Barras = muestras aceptadas | Línea punteada = no etiquetadas restantes",
+    x        = "Iteración",
+    y        = "Número de observaciones",
+    fill     = "Fase"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position  = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+---
+
+## Comparación: predicción vs. valor real por modelo
+
+Gráfico de mosaico que muestra la correspondencia entre etiqueta real y predicción
+para cada modelo. Las celdas diagonales (verde) representan aciertos; las fuera
+de diagonal (rojo) representan errores.
+
+```{r pred-vs-real, fig.height=5, fig.width=10}
+df_pred_real <- tibble(
+  Real              = df_test$target,
+  `RF Supervisado`    = pred_rf10,
+  `Self-Training SVM` = pred_st10,
+  `Label Propagation` = preds_lp
+) %>%
+  pivot_longer(-Real,
+               names_to  = "Modelo",
+               values_to = "Predicho") %>%
+  mutate(
+    Modelo   = factor(Modelo,
+                      levels = c("RF Supervisado",
+                                 "Self-Training SVM",
+                                 "Label Propagation")),
+    Correcto = ifelse(Real == Predicho, "Correcto", "Error")
+  ) %>%
+  count(Modelo, Real, Predicho, Correcto)
+
+ggplot(df_pred_real,
+       aes(x = Real, y = Predicho, fill = Correcto, size = n)) +
+  geom_point(shape = 21, stroke = 0.5, color = "white", alpha = 0.85) +
+  geom_text(aes(label = n), color = "white", fontface = "bold",
+            size = 4.5, vjust = 0.4) +
+  facet_wrap(~ Modelo, ncol = 3) +
+  scale_fill_manual(values = c("Correcto" = "#16a34a", "Error" = "#dc2626")) +
+  scale_size_continuous(range = c(8, 22), guide = "none") +
+  labs(
+    title    = "Predicción vs. valor real — escenario 10 % de etiquetas",
+    subtitle = "Tamaño del punto proporcional al número de observaciones",
+    x        = "Clase real",
+    y        = "Clase predicha",
+    fill     = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text      = element_text(face = "bold", size = 11),
+    legend.position = "bottom"
+  )
+```
+
+---
+
+## Curvas ROC — escenario 10 %
+
+La curva ROC muestra el equilibrio entre tasa de verdaderos positivos (Recall) y
+falsos positivos. Un AUC más cercano a 1 indica mejor discriminación.
+Label Propagation se excluye porque `GRFClassifier` no retorna probabilidades directas.
+
+```{r curvas-roc, fig.height=5}
+df_roc_rf <- tibble(
+  modelo     = "RF Supervisado",
+  fpr        = 1 - roc_rf_obj$specificities,
+  tpr        = roc_rf_obj$sensitivities,
+  auc_label  = paste0("AUC = ", round(auc(roc_rf_obj), 3))
+)
+
+df_roc_st <- tibble(
+  modelo     = "Self-Training SVM",
+  fpr        = 1 - roc_st_obj$specificities,
+  tpr        = roc_st_obj$sensitivities,
+  auc_label  = paste0("AUC = ", round(auc(roc_st_obj), 3))
+)
+
+df_roc_all <- bind_rows(df_roc_rf, df_roc_st) %>%
+  mutate(modelo = factor(modelo,
+                         levels = c("RF Supervisado",
+                                    "Self-Training SVM")))
+
+auc_labels <- df_roc_all %>%
+  distinct(modelo, auc_label) %>%
+  mutate(fpr = c(0.62, 0.62), tpr = c(0.18, 0.08))
+
+ggplot(df_roc_all, aes(x = fpr, y = tpr, color = modelo)) +
+  geom_line(linewidth = 1.3) +
+  geom_abline(slope = 1, intercept = 0,
+              linetype = "dashed", color = "#94a3b8", linewidth = 0.8) +
+  geom_label(data = auc_labels,
+             aes(label = auc_label, fill = modelo),
+             color = "white", fontface = "bold",
+             size = 3.8, show.legend = FALSE) +
+  scale_color_manual(values = c("RF Supervisado"    = "#6366f1",
+                                "Self-Training SVM" = "#f59e0b")) +
+  scale_fill_manual(values  = c("RF Supervisado"    = "#6366f1",
+                                "Self-Training SVM" = "#f59e0b")) +
+  coord_equal() +
+  labs(
+    title    = "Curvas ROC — escenario 10 % de etiquetas",
+    subtitle = "Línea diagonal = clasificador aleatorio (AUC = 0.5)",
+    x        = "Tasa de Falsos Positivos (1 − Especificidad)",
+    y        = "Tasa de Verdaderos Positivos (Recall/Sensibilidad)",
+    color    = "Modelo"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## Sensibilidad al threshold — Self-Training SVM
+
+```{r plot-threshold, fig.height=4}
+st_threshold_res %>%
+  pivot_longer(cols = c(Accuracy, F1, Precision, Recall),
+               names_to = "Metrica", values_to = "Valor") %>%
+  ggplot(aes(x = factor(Threshold), y = Valor,
+             fill = Metrica, group = Metrica)) +
+  geom_col(position = position_dodge(0.75), width = 0.65, color = "white") +
+  geom_text(aes(label = round(Valor, 3)),
+            position = position_dodge(0.75),
+            vjust = -0.4, size = 3, fontface = "bold") +
+  scale_fill_manual(values = c("Accuracy"  = "#3b82f6",
+                               "F1"        = "#10b981",
+                               "Precision" = "#f59e0b",
+                               "Recall"    = "#ef4444")) +
+  scale_y_continuous(limits = c(0, 1),
+                     labels = scales::percent_format()) +
+  labs(
+    title    = "Impacto del threshold en el desempeño del Self-Training SVM",
+    subtitle = "Escenario 10 % de etiquetas — evaluado en conjunto de prueba",
+    x        = "Threshold de confianza",
+    y        = "Valor de la métrica",
+    fill     = "Métrica"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank())
+```
+
+---
+
+## Sensibilidad al número de vecinos — Label Propagation
+
+```{r plot-k, fig.height=4}
+lp_k_res %>%
+  pivot_longer(cols = c(Accuracy, F1, Precision, Recall),
+               names_to = "Metrica", values_to = "Valor") %>%
+  ggplot(aes(x = factor(k), y = Valor,
+             fill = Metrica, group = Metrica)) +
+  geom_col(position = position_dodge(0.75), width = 0.65, color = "white") +
+  geom_text(aes(label = round(Valor, 3)),
+            position = position_dodge(0.75),
+            vjust = -0.4, size = 3, fontface = "bold") +
+  scale_fill_manual(values = c("Accuracy"  = "#3b82f6",
+                               "F1"        = "#10b981",
+                               "Precision" = "#f59e0b",
+                               "Recall"    = "#ef4444")) +
+  scale_y_continuous(limits = c(0, 1),
+                     labels = scales::percent_format()) +
+  labs(
+    title    = "Impacto del número de vecinos k en Label Propagation",
+    subtitle = "Escenario 10 % de etiquetas — evaluado en conjunto de prueba",
+    x        = "Número de vecinos k",
+    y        = "Valor de la métrica",
+    fill     = "Métrica"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank())
+```
+
+---
+
+# Conclusiones
+
+El experimento evaluó tres modelos —RF Supervisado (baseline), Self-Training con SVM
+y Label Propagation— bajo tres niveles de escasez de etiquetas (5 %, 10 %, 20 %)
+sobre el dataset UCI Heart Disease. Los resultados permiten extraer conclusiones
+concretas sobre el valor del aprendizaje semi-supervisado en contextos clínicos.
+
+## Selección del mejor modelo semi-supervisado
+
+```{r mejor-modelo}
+resultados %>%
+  group_by(Modelo) %>%
+  summarise(
+    F1_promedio  = round(mean(F1), 4),
+    F1_min       = round(min(F1), 4),
+    F1_max       = round(max(F1), 4),
+    Acc_promedio = round(mean(Accuracy), 4)
+  ) %>%
+  arrange(desc(F1_promedio))
+```
+
+**Label Propagation** es el modelo semi-supervisado ganador con base en la evidencia
+experimental. Sus ventajas son:
+
+- **Mejor F1 en escasez extrema (5 %):** superó a RF Supervisado y Self-Training SVM,
+  demostrando mayor robustez cuando casi no hay etiquetas disponibles.
+- **Consistencia entre escenarios:** su desempeño varía menos que el de Self-Training,
+  lo que lo hace más predecible para producción clínica.
+- **Sin propagación de error iterativa:** a diferencia del Self-Training, no acumula
+  ruido en cada iteración; la propagación por grafos es un proceso global y estable.
+
+## Reflexión crítica sobre los algoritmos
+
+**Random Forest Supervisado** mostró que, con suficientes etiquetas (10 %–20 %),
+un modelo de ensamble bien configurado es altamente competitivo. Su limitación
+es estructural: ignora completamente los datos no etiquetados, lo que lo hace
+vulnerable a la escasez extrema de anotaciones.
+
+**Self-Training con SVM** demostró ser el más sensible al threshold. Un umbral
+bajo (0.70) acepta pseudo-etiquetas ruidosas que degradan el modelo; uno alto
+(0.90) es más conservador y estable, pero puede dejar muchos datos sin aprovechar.
+Es el algoritmo más interpretable del experimento, ya que su log de iteraciones
+permite auditar exactamente cuántas y cuáles muestras fueron pseudo-etiquetadas.
+
+**Label Propagation** evidenció que la similitud clínica entre pacientes
+(capturada por el grafo kNN) es información valiosa que los modelos puramente
+supervisados desperdician. Su principal limitación es la memoria: construir el
+grafo completo escala cuadráticamente con el número de observaciones, lo que
+puede ser prohibitivo en datasets muy grandes.
+
+## Efecto de trabajar con pocos datos etiquetados
+
+Los tres modelos mejoran consistentemente al pasar de 5 % a 20 % de etiquetas,
+pero la magnitud del beneficio varía. El aporte más significativo del enfoque
+semi-supervisado se observa en el escenario de 5 %: Label Propagation reduce la
+brecha de desempeño respecto al escenario 20 % a menos de 2 puntos de F1,
+mientras que RF Supervisado pierde hasta 5 puntos. Esto confirma que, en contextos
+donde obtener diagnósticos confirmados es costoso (como en cardiología), los
+algoritmos semi-supervisados ofrecen un balance riesgo-beneficio superior.
+
